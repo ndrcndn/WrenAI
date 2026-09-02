@@ -659,7 +659,7 @@ class TestMemoryStore:
         result = memory_store.index_schema(_MANIFEST)
         assert result["schema_items"] == 11
         assert result["over_budget"] == 0 and result["split_rows"] == 0
-        assert result["max_tokens"] == 128
+        assert result["max_tokens"] == 256
 
         # Small schema → full strategy
         ctx = memory_store.get_context(_MANIFEST, "customer order price")
@@ -733,14 +733,14 @@ class TestMemoryStore:
         (proj / "models" / "orders" / "metadata.yml").write_text(
             "name: orders\ndescription: Order facts with shipping priority per line\n"
             "columns:\n"
-            + "".join(f"  - name: col{i}\n    type: int\n" for i in range(40)),
+            + "".join(f"  - name: col{i}\n    type: int\n" for i in range(120)),
             encoding="utf-8",
         )
 
         memory_store.index_schema(_MANIFEST)
         report = memory_store.index_sources(proj, _MANIFEST)
 
-        assert report["max_tokens"] == 128  # default model's max_seq_length
+        assert report["max_tokens"] == 256  # WREN_EMBEDDING_MAX_SEQ_LENGTH default
         assert report["summary"]["files"] == 4
         assert report["summary"]["embedded"] == 1
         assert report["summary"]["chunked"] == 2
@@ -748,7 +748,7 @@ class TestMemoryStore:
         assert report["source_items"] == report["summary"]["chunks"]
         assert set(report["summary"]["by_type"]) == {"rule", "model_source"}
         long = next(f for f in report["files"] if f["path"].endswith("02_long.md"))
-        assert long["chunks"] > 1 and long["largest_chunk"] <= 128
+        assert long["chunks"] > 1 and long["largest_chunk"] <= report["max_tokens"]
         model = next(f for f in report["files"] if f["path"].endswith("metadata.yml"))
         assert model["item_type"] == "model_source" and model["chunks"] > 1
 

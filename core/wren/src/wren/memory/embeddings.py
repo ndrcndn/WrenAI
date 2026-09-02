@@ -15,6 +15,36 @@ _DEFAULT_MODEL = os.getenv(
 )
 _DEFAULT_DIM = 384
 
+# Token budget per embedded text. The default model ships configured at 128
+# (its fine-tuning length) on a 512-position architecture; 256 is the working
+# default here. Clamped to the model's max_position_embeddings when known.
+_DEFAULT_MAX_SEQ_LENGTH = 256
+_MAX_SEQ_LENGTH = int(
+    os.getenv("WREN_EMBEDDING_MAX_SEQ_LENGTH", _DEFAULT_MAX_SEQ_LENGTH)
+)
+
+
+def _apply_max_seq_length(model) -> None:
+    """Set the model's sequence budget to ``WREN_EMBEDDING_MAX_SEQ_LENGTH``.
+
+    The value is clamped to the architecture's positional limit so a too-high
+    setting can never produce an index error. The tokenizer's own limit is
+    aligned so token counting and truncation agree.
+    """
+    limit = _MAX_SEQ_LENGTH
+    try:
+        positions = int(model[0].auto_model.config.max_position_embeddings)
+        # BERT-style models reserve a couple of positions for special tokens.
+        limit = min(limit, positions - 2)
+    except (AttributeError, IndexError, TypeError, ValueError):
+        pass
+    if limit <= 0:
+        return
+    model.max_seq_length = limit
+    tokenizer = getattr(model, "tokenizer", None)
+    if tokenizer is not None:
+        tokenizer.model_max_length = limit
+
 
 def _disable_transformers_progress_bar() -> None:
     # Imported lazily: transformers ships with the optional `memory` extra,
@@ -67,6 +97,7 @@ def _get_local_first_embedding_class():
                             device=self.device,
                             trust_remote_code=self.trust_remote_code,
                         )
+                    _apply_max_seq_length(model)
                     _model_cache = (key, model)
                     return model
 
