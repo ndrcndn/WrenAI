@@ -399,10 +399,11 @@ def _register_knowledge_tools(mcp: FastMCP, ctx: ServeContext) -> None:
         Uses embedding search when the ``memory`` extra is installed and the
         schema has been indexed (``wren memory index``); otherwise falls back
         to the full plain-text schema description (same content as
-        ``describe_schema``). Results also include knowledge chunks
-        (``item_type`` rule / glossary / metric / caveat) when
-        ``knowledge/`` was indexed. A ``note`` key is present when the index
-        is missing or stale.
+        ``describe_schema``). Results also include source chunks
+        (``item_type`` rule / model_source / view_source / cube_source: the
+        full content of knowledge/rules/*.md and the models/, views/, cubes/
+        files) when they were indexed. A ``note`` key is present when the
+        index is missing or stale.
         """
         from wren.context import build_json  # noqa: PLC0415
         from wren.memory import schema_indexer  # noqa: PLC0415

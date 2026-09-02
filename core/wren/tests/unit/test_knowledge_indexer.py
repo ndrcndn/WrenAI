@@ -1,4 +1,4 @@
-"""knowledge_indexer: every file validated against the token budget, chunked or skipped with a reason."""
+"""knowledge_indexer: every source file validated against the token budget, chunked or skipped with a reason."""
 
 from __future__ import annotations
 
@@ -7,11 +7,14 @@ from datetime import datetime, timezone
 import pytest
 
 from wren.memory.knowledge_indexer import (
-    KNOWLEDGE_ITEM_TYPES,
-    KNOWLEDGE_TYPES,
+    CUBE_SOURCE_TYPE,
+    MODEL_SOURCE_TYPE,
+    RULE_TYPE,
+    SOURCE_TYPES,
+    VIEW_SOURCE_TYPE,
     chunk_text,
-    collect_knowledge_files,
-    extract_knowledge_items,
+    collect_source_files,
+    extract_source_items,
     summarize_reports,
 )
 
@@ -49,7 +52,22 @@ def test_chunk_text_splits_on_headings_first():
 
 
 @pytest.mark.unit
-def test_chunk_text_falls_through_paragraph_sentence_word():
+def test_chunk_text_folds_heading_only_sections_into_next():
+    # "# Concepts" has no body of its own: it must not become a chunk.
+    text = "# Concepts\n\n## Account Manager\n" + " ".join(f"w{i}" for i in range(9))
+    chunks = chunk_text(text, _words, 8)
+    assert all(not c.strip().startswith("# Concepts\n\n") for c in chunks)
+    assert not any(c.strip() == "# Concepts" for c in chunks)
+    assert chunks[0].startswith("# Concepts\n## Account Manager\n")
+    assert all(_words(c) <= 8 for c in chunks)
+    # Sub-chunks keep the heading context when it fits.
+    assert all(
+        c.startswith("# Concepts\n## Account Manager") or "w" in c for c in chunks
+    )
+
+
+@pytest.mark.unit
+def test_chunk_text_falls_through_paragraph_line_sentence_word():
     long_sentence = " ".join(f"w{i}" for i in range(25))  # 25 tokens, no punctuation
     text = f"## H\n{long_sentence}\n\nshort para. another one."
     chunks = chunk_text(text, _words, 8)
@@ -60,6 +78,16 @@ def test_chunk_text_falls_through_paragraph_sentence_word():
     joined = " ".join(chunks)
     assert all(f"w{i}" in joined for i in range(25))
     assert "short para." in joined and "another one." in joined
+
+
+@pytest.mark.unit
+def test_chunk_text_yaml_splits_on_lines():
+    yaml = "\n".join(f"- name: col{i}\n  type: int" for i in range(10))  # 40 words
+    chunks = chunk_text(yaml, _words, 12)
+    assert len(chunks) > 1
+    assert all(_words(c) <= 12 for c in chunks)
+    # Lines stay intact — no line is cut mid-way.
+    assert all(ln in yaml.split("\n") for c in chunks for ln in c.split("\n"))
 
 
 @pytest.mark.unit
@@ -89,31 +117,45 @@ def _project(tmp_path, files: dict[str, str | bytes]):
 
 
 @pytest.mark.unit
-def test_collect_knowledge_files_covers_every_subdir_but_sql(tmp_path):
+def test_collect_source_files_rules_models_views_cubes_only(tmp_path):
     proj = _project(
         tmp_path,
         {
             "knowledge/rules/01.md": "r",
-            "knowledge/glossary/g.md": "g",
-            "knowledge/metrics/m.md": "m",
-            "knowledge/caveats/c.md": "c",
-            "knowledge/sql/q.md": "not collected",
             "knowledge/rules/notes.txt": "not md",
+            "knowledge/glossary/g.md": "not collected",
+            "knowledge/metrics/m.md": "not collected",
+            "knowledge/caveats/c.md": "not collected",
+            "knowledge/sql/q.md": "not collected",
+            "models/orders/metadata.yml": "name: orders",
+            "models/orders/ref_sql.sql": "SELECT 1",
+            "models/orders/README.md": "not collected",
+            "views/top/metadata.yml": "name: top",
+            "views/top/sql.yml": "statement: SELECT 2",
+            "cubes/sales/metadata.yml": "name: sales",
+            "cubes/stray.yml": "not under an entity dir",
         },
     )
-    got = collect_knowledge_files(proj)
-    assert [(t, p.name) for t, p in got] == [
-        ("rule", "01.md"),
-        ("glossary", "g.md"),
-        ("metric", "m.md"),
-        ("caveat", "c.md"),
+    got = collect_source_files(proj)
+    assert [(s.item_type, s.entity, s.path.name) for s in got] == [
+        (RULE_TYPE, "", "01.md"),
+        (MODEL_SOURCE_TYPE, "orders", "metadata.yml"),
+        (MODEL_SOURCE_TYPE, "orders", "ref_sql.sql"),
+        (VIEW_SOURCE_TYPE, "top", "metadata.yml"),
+        (VIEW_SOURCE_TYPE, "top", "sql.yml"),
+        (CUBE_SOURCE_TYPE, "sales", "metadata.yml"),
     ]
-    assert set(KNOWLEDGE_ITEM_TYPES.values()) == KNOWLEDGE_TYPES
+    assert SOURCE_TYPES == {
+        RULE_TYPE,
+        MODEL_SOURCE_TYPE,
+        VIEW_SOURCE_TYPE,
+        CUBE_SOURCE_TYPE,
+    }
 
 
 @pytest.mark.unit
-def test_collect_knowledge_files_no_knowledge_dir(tmp_path):
-    assert collect_knowledge_files(tmp_path) == []
+def test_collect_source_files_empty_project(tmp_path):
+    assert collect_source_files(tmp_path) == []
 
 
 @pytest.mark.unit
@@ -124,14 +166,17 @@ def test_extract_reports_every_file_and_never_exceeds_budget(tmp_path):
             "knowledge/rules/short.md": "one two three",
             "knowledge/rules/long.md": "# T\n" + " ".join(f"w{i}" for i in range(40)),
             "knowledge/rules/empty.md": "   \n",
-            "knowledge/glossary/bad.md": b"\xff\xfe\x00garbage",
+            "knowledge/rules/bad.md": b"\xff\xfe\x00garbage",
+            "models/orders/metadata.yml": "\n".join(
+                f"- name: c{i}\n  type: int" for i in range(8)
+            ),
         },
     )
-    files = collect_knowledge_files(proj)
-    items, reports = extract_knowledge_items(files, proj, "h1", _NOW, _words, 10)
+    files = collect_source_files(proj)
+    items, reports = extract_source_items(files, proj, "h1", _NOW, _words, 10)
 
     by_path = {r.path: r for r in reports}
-    assert len(reports) == len(files) == 4
+    assert len(reports) == len(files) == 5
 
     assert by_path["knowledge/rules/short.md"].status == "embedded"
     assert by_path["knowledge/rules/short.md"].chunks == 1
@@ -145,44 +190,55 @@ def test_extract_reports_every_file_and_never_exceeds_budget(tmp_path):
     assert by_path["knowledge/rules/empty.md"].status == "skipped"
     assert by_path["knowledge/rules/empty.md"].reason == "empty file"
 
-    bad = by_path["knowledge/glossary/bad.md"]
+    bad = by_path["knowledge/rules/bad.md"]
     assert bad.status == "skipped"
     assert bad.reason.startswith("not UTF-8")
 
+    model = by_path["models/orders/metadata.yml"]
+    assert model.item_type == MODEL_SOURCE_TYPE
+    assert model.status == "chunked"
+
     # Items: one per chunk, shaped like schema_items rows.
-    assert len(items) == 1 + long.chunks
+    assert len(items) == 1 + long.chunks + model.chunks
     for it in items:
         assert _words(it["text"]) <= 10
-        assert it["item_type"] in KNOWLEDGE_TYPES
+        assert it["item_type"] in SOURCE_TYPES
         assert it["mdl_hash"] == "h1"
         assert it["indexed_at"] == _NOW
-        assert it["model_name"] == ""
         assert it["is_calculated"] is False
         assert it["expression"] == it["item_name"].split("#")[0]
 
-    names = [it["item_name"] for it in items if it["item_type"] == "rule"]
-    assert "knowledge/rules/short.md" in names
-    assert "knowledge/rules/long.md#1" in names
+    rule_names = [it["item_name"] for it in items if it["item_type"] == RULE_TYPE]
+    assert "knowledge/rules/short.md" in rule_names
+    assert "knowledge/rules/long.md#1" in rule_names
+    assert all(it["model_name"] == "" for it in items if it["item_type"] == RULE_TYPE)
+    # Source rows carry their entity so model_name filters find them.
+    assert all(
+        it["model_name"] == "orders"
+        for it in items
+        if it["item_type"] == MODEL_SOURCE_TYPE
+    )
 
     summary = summarize_reports(reports)
     assert summary == {
-        "files": 4,
-        "chunks": 1 + long.chunks,
+        "files": 5,
+        "chunks": 1 + long.chunks + model.chunks,
+        "by_type": {RULE_TYPE: 1 + long.chunks, MODEL_SOURCE_TYPE: model.chunks},
         "embedded": 1,
-        "chunked": 1,
+        "chunked": 2,
         "skipped": 2,
     }
 
 
 @pytest.mark.unit
 def test_extract_skips_when_nothing_fits(tmp_path):
-    proj = _project(tmp_path, {"knowledge/caveats/x.md": "supercalifragilistic"})
-    files = collect_knowledge_files(proj)
+    proj = _project(tmp_path, {"knowledge/rules/x.md": "supercalifragilistic"})
+    files = collect_source_files(proj)
 
     def count(_: str) -> int:
         return 99
 
-    items, reports = extract_knowledge_items(files, proj, "h", _NOW, count, 5)
+    items, reports = extract_source_items(files, proj, "h", _NOW, count, 5)
     assert items == []
     assert reports[0].status == "skipped"
     assert "no chunk fits within 5 tokens" == reports[0].reason

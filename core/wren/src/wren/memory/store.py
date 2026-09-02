@@ -15,9 +15,9 @@ from wren.memory.embeddings import (
     warm_up,
 )
 from wren.memory.knowledge_indexer import (
-    KNOWLEDGE_TYPES,
-    collect_knowledge_files,
-    extract_knowledge_items,
+    SOURCE_TYPES,
+    collect_source_files,
+    extract_source_items,
     summarize_reports,
 )
 from wren.memory.schema_indexer import (
@@ -302,27 +302,28 @@ class MemoryStore:
 
         return approx, _FALLBACK_MAX_TOKENS
 
-    def index_knowledge(self, project_path: Path, manifest: dict) -> dict:
-        """Embed ``knowledge/{rules,glossary,metrics,caveats}/*.md`` as rows.
+    def index_sources(self, project_path: Path, manifest: dict) -> dict:
+        """Embed ``knowledge/rules/*.md`` and the ``models/``, ``views/``,
+        ``cubes/`` source files as rows (full file content, chunked).
 
         Each file is checked against the embedder's token budget and chunked
         when needed (see :mod:`wren.memory.knowledge_indexer`). Existing
-        knowledge rows are replaced; schema rows are untouched, so this can
-        run after :meth:`index_schema` without re-embedding the schema.
+        source rows are replaced; MDL-derived schema rows are untouched, so
+        this can run after :meth:`index_schema` without re-embedding them.
 
-        Returns ``{"knowledge_items": int, "summary": {...}, "files": [...]}``
-        where ``files`` holds one report per source file.
+        Returns ``{"source_items": int, "max_tokens": int, "summary": {...},
+        "files": [...]}`` where ``files`` holds one report per source file.
         """
-        files = collect_knowledge_files(project_path)
+        files = collect_source_files(project_path)
         count, max_tokens = self.token_budget()
         now = datetime.now(timezone.utc)
-        items, reports = extract_knowledge_items(
+        items, reports = extract_source_items(
             files, project_path, manifest_hash(manifest), now, count, max_tokens
         )
 
         table_exists = _SCHEMA_TABLE in _table_names(self._db)
         if table_exists:
-            types = ", ".join(f"'{t}'" for t in sorted(KNOWLEDGE_TYPES))
+            types = ", ".join(f"'{t}'" for t in sorted(SOURCE_TYPES))
             self._db.open_table(_SCHEMA_TABLE).delete(f"item_type IN ({types})")
 
         if items:
@@ -339,7 +340,7 @@ class MemoryStore:
                 )
 
         return {
-            "knowledge_items": len(items),
+            "source_items": len(items),
             "max_tokens": max_tokens,
             "summary": summarize_reports(reports),
             "files": [r.as_dict() for r in reports],

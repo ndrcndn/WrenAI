@@ -25,11 +25,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Default sources to watch, relative to the project root. The MDL manifest is
-# the compiled schema; knowledge/sql holds the NL→SQL pairs; the other
-# knowledge subdirs are embedded as chunks. All feed the index, so a change to
-# any of them should trigger a rebuild.
+# the compiled schema; knowledge/sql holds the NL→SQL pairs; knowledge/rules
+# and the models/views/cubes source files are embedded as chunks. All feed the
+# index, so a change to any of them should trigger a rebuild.
 _DEFAULT_MDL_REL = ("target", "mdl.json")
-_KNOWLEDGE_SUBDIRS = ("sql", "rules", "glossary", "metrics", "caveats")
+_KNOWLEDGE_SUBDIRS = ("sql", "rules")
+_SOURCE_DIRS = ("models", "views", "cubes")
+_SOURCE_SUFFIXES = (".yml", ".yaml", ".sql")
 
 # Guard against pathological tight loops while still allowing snappy local use.
 MIN_INTERVAL_SECONDS = 1.0
@@ -38,10 +40,11 @@ MIN_INTERVAL_SECONDS = 1.0
 def _iter_watched_files(project_path: Path) -> list[Path]:
     """Return the sorted list of files whose content is fingerprinted.
 
-    Covers the compiled MDL manifest plus every ``knowledge/<subdir>/*.md``
-    file (sql, rules, glossary, metrics, caveats). Missing paths are simply
-    absent from the list — a watcher started before ``target/mdl.json`` exists
-    will pick it up on the poll after it appears.
+    Covers the compiled MDL manifest, ``knowledge/sql/*.md``,
+    ``knowledge/rules/*.md`` and every YAML/SQL file under ``models/``,
+    ``views/`` and ``cubes/``. Missing paths are simply absent from the list —
+    a watcher started before ``target/mdl.json`` exists will pick it up on the
+    poll after it appears.
     """
     files: list[Path] = []
     mdl = project_path.joinpath(*_DEFAULT_MDL_REL)
@@ -51,6 +54,16 @@ def _iter_watched_files(project_path: Path) -> list[Path]:
         d = project_path / "knowledge" / subdir
         if d.is_dir():
             files.extend(sorted(p for p in d.glob("*.md") if p.is_file()))
+    for dirname in _SOURCE_DIRS:
+        d = project_path / dirname
+        if d.is_dir():
+            files.extend(
+                sorted(
+                    p
+                    for p in d.rglob("*")
+                    if p.is_file() and p.suffix.lower() in _SOURCE_SUFFIXES
+                )
+            )
     return files
 
 

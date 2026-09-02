@@ -709,10 +709,11 @@ class TestMemoryStore:
         assert "note" not in fresh
         assert len(fresh["results"]) > 0
 
-    def test_index_knowledge_embeds_chunks_and_reports(self, memory_store, tmp_path):
+    def test_index_sources_embeds_chunks_and_reports(self, memory_store, tmp_path):
         proj = tmp_path / "proj"
         (proj / "knowledge" / "rules").mkdir(parents=True)
         (proj / "knowledge" / "glossary").mkdir()
+        (proj / "models" / "orders").mkdir(parents=True)
         (proj / "knowledge" / "rules" / "01_fiscal.md").write_text(
             "# Fiscal year\nThe fiscal year starts on 1 April; Q1 is April–June.",
             encoding="utf-8",
@@ -724,23 +725,34 @@ class TestMemoryStore:
         (proj / "knowledge" / "rules" / "02_long.md").write_text(
             long_rule, encoding="utf-8"
         )
-        (proj / "knowledge" / "glossary" / "empty.md").write_text("", encoding="utf-8")
+        (proj / "knowledge" / "rules" / "03_empty.md").write_text("", encoding="utf-8")
+        # Not collected: glossary is outside the indexed set.
+        (proj / "knowledge" / "glossary" / "terms.md").write_text("x", encoding="utf-8")
+        (proj / "models" / "orders" / "metadata.yml").write_text(
+            "name: orders\ndescription: Order facts with shipping priority per line\n"
+            "columns:\n"
+            + "".join(f"  - name: col{i}\n    type: int\n" for i in range(40)),
+            encoding="utf-8",
+        )
 
         memory_store.index_schema(_MANIFEST)
-        report = memory_store.index_knowledge(proj, _MANIFEST)
+        report = memory_store.index_sources(proj, _MANIFEST)
 
         assert report["max_tokens"] == 128  # default model's max_seq_length
-        assert report["summary"]["files"] == 3
+        assert report["summary"]["files"] == 4
         assert report["summary"]["embedded"] == 1
-        assert report["summary"]["chunked"] == 1
+        assert report["summary"]["chunked"] == 2
         assert report["summary"]["skipped"] == 1
-        assert report["knowledge_items"] == report["summary"]["chunks"]
+        assert report["source_items"] == report["summary"]["chunks"]
+        assert set(report["summary"]["by_type"]) == {"rule", "model_source"}
         long = next(f for f in report["files"] if f["path"].endswith("02_long.md"))
         assert long["chunks"] > 1 and long["largest_chunk"] <= 128
+        model = next(f for f in report["files"] if f["path"].endswith("metadata.yml"))
+        assert model["item_type"] == "model_source" and model["chunks"] > 1
 
         # Rows live next to schema items and are searchable by type.
         info = memory_store.status()
-        assert info["tables"]["schema_items"] == 11 + report["knowledge_items"]
+        assert info["tables"]["schema_items"] == 11 + report["source_items"]
         ctx = memory_store.get_context(
             _MANIFEST, "when does the fiscal year start", item_type="rule", threshold=10
         )
@@ -748,19 +760,25 @@ class TestMemoryStore:
         assert ctx["results"], "rule chunks must be retrievable"
         assert all(r["item_type"] == "rule" for r in ctx["results"])
         assert "1 April" in ctx["results"][0]["text"]
-        assert "note" not in ctx  # knowledge rows carry the current hash
+        assert "note" not in ctx  # source rows carry the current hash
 
-        # Re-running replaces knowledge rows instead of duplicating them.
-        again = memory_store.index_knowledge(proj, _MANIFEST)
+        # Source rows carry the entity name so model_name filters reach them.
+        src = memory_store.get_context(
+            _MANIFEST, "shipping priority", model_name="orders", threshold=10
+        )
+        assert any(r["item_type"] == "model_source" for r in src["results"])
+
+        # Re-running replaces source rows instead of duplicating them.
+        again = memory_store.index_sources(proj, _MANIFEST)
         assert (
             memory_store.status()["tables"]["schema_items"]
-            == 11 + again["knowledge_items"]
+            == 11 + again["source_items"]
         )
 
-    def test_index_knowledge_without_knowledge_dir(self, memory_store, tmp_path):
+    def test_index_sources_without_source_dirs(self, memory_store, tmp_path):
         memory_store.index_schema(_MANIFEST)
-        report = memory_store.index_knowledge(tmp_path, _MANIFEST)
-        assert report["knowledge_items"] == 0
+        report = memory_store.index_sources(tmp_path, _MANIFEST)
+        assert report["source_items"] == 0
         assert report["summary"]["files"] == 0
         assert memory_store.status()["tables"]["schema_items"] == 11
 

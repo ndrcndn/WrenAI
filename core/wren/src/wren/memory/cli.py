@@ -144,17 +144,19 @@ def _print_results(results: list[dict], output: str) -> None:
                 typer.echo(str(r))
 
 
-def _echo_knowledge_report(report: dict) -> None:
-    """Print the per-file knowledge indexing outcome.
+def _echo_source_report(report: dict) -> None:
+    """Print the per-file source indexing outcome.
 
     Summary line to stdout; every chunked or skipped file to stderr with its
     token count / reason, so nothing is embedded (or dropped) silently.
     """
     s = report["summary"]
+    by_type = ", ".join(f"{t} {n}" for t, n in sorted(s["by_type"].items()))
     typer.echo(
-        f"Indexed {report['knowledge_items']} knowledge chunk(s) from "
-        f"{s['files']} file(s) — {s['embedded']} whole, {s['chunked']} chunked, "
-        f"{s['skipped']} skipped (budget {report['max_tokens']} tokens)."
+        f"Indexed {report['source_items']} source chunk(s) from "
+        f"{s['files']} file(s) [{by_type}] — {s['embedded']} whole, "
+        f"{s['chunked']} chunked, {s['skipped']} skipped "
+        f"(budget {report['max_tokens']} tokens)."
     )
     for f in report["files"]:
         if f["status"] == "chunked":
@@ -179,9 +181,9 @@ def index(
         typer.Option(
             "--instructions/--no-instructions",
             help=(
-                "Also embed knowledge/{rules,glossary,metrics,caveats}/*.md as "
-                "searchable chunks (each file validated against the embedder's "
-                "token budget and split when needed)."
+                "Also embed knowledge/rules/*.md and the models/, views/, cubes/ "
+                "source files as searchable chunks (each file validated against "
+                "the embedder's token budget and split when needed)."
             ),
         ),
     ] = True,
@@ -197,7 +199,7 @@ def index(
     """Index the project for recall.
 
     With the ``memory`` extra: builds the LanceDB semantic index (schema + seed
-    + knowledge/sql pairs + knowledge/{rules,glossary,metrics,caveats} chunks).
+    + knowledge/sql pairs + knowledge/rules and models/views/cubes source chunks).
     Without it: the grep backend reads knowledge/sql/*.md directly, so there is
     nothing to build.
     """
@@ -243,9 +245,9 @@ def index(
         try:
             project_path = discover_project_path()
         except SystemExit as e:
-            typer.echo(f"knowledge/ not indexed: {e}", err=True)
+            typer.echo(f"source files not indexed: {e}", err=True)
         else:
-            _echo_knowledge_report(mem_store.index_knowledge(project_path, manifest))
+            _echo_source_report(mem_store.index_sources(project_path, manifest))
 
     # ── Rebuild query history from knowledge/sql/*.md (source of truth) ──
     # Legacy queries.yml is still loaded when present, for the transition.
@@ -660,7 +662,7 @@ def watch(
         manifest = _load_manifest(mdl)
         mem_store = _get_store(path)
         result = mem_store.index_schema(manifest, seed_queries=True)
-        kres = mem_store.index_knowledge(project_path, manifest)
+        kres = mem_store.index_sources(project_path, manifest)
         from wren.memory.markdown import load_query_pairs  # noqa: PLC0415
 
         md_pairs = load_query_pairs(project_path)
@@ -670,7 +672,7 @@ def watch(
             loaded = res["loaded"] + res["updated"]
         typer.echo(
             f"Reindexed {result['schema_items']} schema item(s), "
-            f"{kres['knowledge_items']} knowledge chunk(s)"
+            f"{kres['source_items']} source chunk(s)"
             + (f", {loaded} pair(s)" if loaded else "")
             + "."
         )
