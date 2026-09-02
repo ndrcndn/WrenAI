@@ -817,6 +817,16 @@ class TestMemoryStore:
         joined = " ".join(model_rows.text)
         assert all(f"column_{i}" in joined for i in range(120))
         assert "Very wide fact table" in joined
+        # No anonymous parts: every part names the model, part 1 carries the
+        # description, column parts are bounded and numbered.
+        assert all(t.startswith("Model 'wide'") for t in model_rows.text)
+        first = next(t for t in model_rows.text if "Very wide fact table" in t)
+        assert "Columns:" not in first
+        col_parts = [t for t in model_rows.text if "(columns part" in t]
+        assert len(col_parts) == 5  # 120 columns / 25 per part
+        assert all(t.count("(int)") <= 25 for t in col_parts)
+        assert any("(columns part 1 of 5)" in t for t in col_parts)
+        assert any("(columns part 5 of 5)" in t for t in col_parts)
 
     def test_index_sources_without_source_dirs(self, memory_store, tmp_path):
         memory_store.index_schema(_MANIFEST)

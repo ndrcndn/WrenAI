@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -102,6 +104,123 @@ def _query_history_arrow_schema(dim: int = _DEFAULT_DIM) -> pa.Schema:
             pa.field("tags", pa.utf8()),
         ]
     )
+
+
+# Maximum columns listed in one part of a split model row.
+_COLUMNS_PER_PART = 25
+
+# Lead clause of an MDL row text, e.g. "Model 'orders'", "Cube 'sales' over
+# 'orders'", "View 'v'", "Relationship 'r'". Everything after ": " or ". " is
+# the body.
+_LEAD_RE = re.compile(
+    r"^(?P<lead>(?:Model|View|Cube|Relationship|Column|Measure|Dimension|"
+    r"Time dimension) '[^']*'(?: over '[^']*'| in (?:model|cube) '[^']*')?)"
+    r"(?P<sep>: |\. |\.$|$)(?P<body>.*)$",
+    re.DOTALL,
+)
+# "Columns: a (t), b (t)…" segment of a model row; stops at ". Primary key" /
+# ". Data scope" or the final period.
+_COLUMNS_RE = re.compile(
+    r"(?P<pre>.*?)(?:^|\. )Columns: (?P<cols>.*?)"
+    r"(?P<post>(?:\. Primary key: .*?)?(?:\. Data scope: .*?)?)\.?$",
+    re.DOTALL,
+)
+# Split "a (int), b (nvarchar(255)), c (decimal(18, 4))" on the commas that
+# separate entries, not the commas inside a type.
+_COLUMN_SEP_RE = re.compile(r", (?=[^\s(),]+ \()")
+
+
+def _lead_and_body(text: str) -> tuple[str, str]:
+    m = _LEAD_RE.match(text)
+    if not m:
+        return "", text
+    return m.group("lead"), m.group("body")
+
+
+def _pack_with_prefix(
+    parts: list[str],
+    prefix_for: Callable[[int, int], str],
+    count: Callable[[str], int],
+    max_tokens: int,
+    sep: str,
+    *,
+    max_items: int | None = None,
+    suffix: str = "",
+) -> list[str]:
+    """Greedily pack *parts* into chunks; each chunk fits with its prefix.
+
+    ``prefix_for(k, n)`` yields the prefix for part *k* of *n*; the widest
+    prefix is reserved while packing so the final numbering always fits.
+    ``max_items`` caps the entries per chunk regardless of budget.
+    """
+    reserve = count(prefix_for(99, 99) + suffix)
+    budget = max(max_tokens - reserve, max_tokens // 4)
+    groups: list[list[str]] = []
+    current: list[str] = []
+    for part in parts:
+        if not current:
+            current = [part]
+            continue
+        full = max_items is not None and len(current) >= max_items
+        if full or count(sep.join([*current, part])) > budget:
+            groups.append(current)
+            current = [part]
+        else:
+            current.append(part)
+    if current:
+        groups.append(current)
+    n = len(groups)
+    out = []
+    for k, g in enumerate(groups, 1):
+        text = f"{prefix_for(k, n)}{sep.join(g)}{suffix}"
+        if count(text) > max_tokens:
+            text = sep.join(g) + suffix  # prefix would not fit; keep content whole
+        out.append(text)
+    return out
+
+
+def split_row_text(text: str, item_type: str, count, max_tokens: int) -> list[str]:
+    """Split an over-budget MDL row text into parts that keep its identity.
+
+    See :meth:`MemoryStore._fit_items` for the contract. Every returned part
+    satisfies ``count(part) <= max_tokens``.
+    """
+    lead, body = _lead_and_body(text)
+    if not lead:
+        return chunk_text(text, count, max_tokens)
+
+    if item_type == "model":
+        cm = _COLUMNS_RE.match(body)
+        if cm:
+            head = f"{lead}: {cm.group('pre')}" if cm.group("pre") else lead
+            head = (head + cm.group("post")).rstrip(".") + "."
+            cols = [
+                c.strip() for c in _COLUMN_SEP_RE.split(cm.group("cols")) if c.strip()
+            ]
+            parts = chunk_text(head, count, max_tokens)
+            parts.extend(
+                _pack_with_prefix(
+                    cols,
+                    lambda k, n: f"{lead} (columns part {k} of {n}): ",
+                    count,
+                    max_tokens,
+                    ", ",
+                    max_items=_COLUMNS_PER_PART,
+                    suffix=".",
+                )
+            )
+            return [p for p in parts if count(p) <= max_tokens]
+
+    # Generic: cascade over the body, then prefix each part with the lead.
+    reserve = count(f"{lead} (part 99 of 99): ")
+    pieces = chunk_text(body, count, max(max_tokens - reserve, max_tokens // 4))
+    return [
+        p
+        for p in _pack_with_prefix(
+            pieces, lambda k, n: f"{lead} (part {k} of {n}): ", count, max_tokens, " "
+        )
+        if count(p) <= max_tokens
+    ]
 
 
 def _table_names(db) -> list[str]:
@@ -290,11 +409,19 @@ class MemoryStore:
         """Validate every row text against the token budget; split what fails.
 
         Returns ``(items, over_budget, split_rows, max_tokens)``. Rows that
-        fit pass through unchanged. A row over budget is chunked with the
-        same heading → paragraph → line → sentence → word cascade used for
-        source files; each chunk keeps the row's metadata and gets an
-        ``item_name`` suffix. A chunk is never handed to the embedder if it
-        still exceeds ``max_tokens``.
+        fit pass through unchanged. A row over budget is split into parts that
+        each carry the row's lead clause (``Model 'x'``, ``Cube 'x' over 'y'``,
+        ``View 'x'``, ``Relationship 'x'``) so no part is anonymous:
+
+        * model rows split on column boundaries — part 1 is the description /
+          primary key / data scope, the following parts list at most
+          :data:`_COLUMNS_PER_PART` columns each, prefixed
+          ``Model 'x' (columns part k of n):``;
+        * other rows use the heading → paragraph → line → sentence → word
+          cascade on the remainder, each part prefixed ``<lead> (part k of n):``.
+
+        Each part keeps the row's metadata and gets an ``item_name`` suffix. A
+        part is never handed to the embedder if it exceeds ``max_tokens``.
         """
         if not items:
             return items, 0, 0, 0
@@ -307,12 +434,12 @@ class MemoryStore:
                 fitted.append(item)
                 continue
             over_budget += 1
-            chunks = chunk_text(item["text"], count, max_tokens)
-            for i, chunk in enumerate(chunks):
+            parts = split_row_text(item["text"], item["item_type"], count, max_tokens)
+            for i, part in enumerate(parts):
                 fitted.append(
-                    {**item, "text": chunk, "item_name": f"{item['item_name']}#{i + 1}"}
+                    {**item, "text": part, "item_name": f"{item['item_name']}#{i + 1}"}
                 )
-            split_rows += len(chunks)
+            split_rows += len(parts)
         return fitted, over_budget, split_rows, max_tokens
 
     # ── Knowledge indexing ────────────────────────────────────────────────
