@@ -182,7 +182,7 @@ def index(
             "--instructions/--no-instructions",
             help=(
                 "Also embed knowledge/rules/*.md and the models/, views/, cubes/ "
-                "source files as searchable chunks (each file validated against "
+                "metadata.yml files as searchable chunks (each file validated against "
                 "the embedder's token budget and split when needed)."
             ),
         ),

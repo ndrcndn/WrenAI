@@ -3,9 +3,13 @@
 Sources:
 
 * ``knowledge/rules/*.md``            → ``item_type="rule"``
-* ``models/<name>/*.yml|*.sql``       → ``item_type="model_source"`` (model_name=<name>)
-* ``views/<name>/*.yml|*.sql``        → ``item_type="view_source"``  (model_name=<name>)
-* ``cubes/<name>/*.yml``              → ``item_type="cube_source"``  (model_name=<name>)
+* ``models/<name>/metadata.yml``      → ``item_type="model_source"`` (model_name=<name>)
+* ``views/<name>/metadata.yml``       → ``item_type="view_source"``  (model_name=<name>)
+* ``cubes/<name>/metadata.yml``       → ``item_type="cube_source"``  (model_name=<name>)
+
+SQL bodies (``views/<name>/sql.yml``, ``models/<name>/*.sql``) are not embedded:
+they are fragments with no natural-language signal; the agent reads exact SQL
+through ``describe_model`` / the ``wren://knowledge`` resources.
 
 These complement the compiled-MDL rows (model/column/view/cube summaries): the
 MDL rows are short synthesised descriptions, the source rows are the full
@@ -47,7 +51,7 @@ _ENTITY_DIRS: dict[str, str] = {
     "views": VIEW_SOURCE_TYPE,
     "cubes": CUBE_SOURCE_TYPE,
 }
-_ENTITY_SUFFIXES = (".yml", ".yaml", ".sql")
+_ENTITY_FILES = ("metadata.yml", "metadata.yaml")
 
 TokenCounter = Callable[[str], int]
 
@@ -98,7 +102,7 @@ def collect_source_files(project_path: Path) -> list[SourceFile]:
             continue
         for entity_dir in sorted(p for p in root.iterdir() if p.is_dir()):
             for f in sorted(entity_dir.iterdir()):
-                if f.is_file() and f.suffix.lower() in _ENTITY_SUFFIXES:
+                if f.is_file() and f.name.lower() in _ENTITY_FILES:
                     found.append(SourceFile(item_type, f, entity_dir.name))
     return found
 

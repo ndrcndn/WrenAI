@@ -128,10 +128,10 @@ def test_collect_source_files_rules_models_views_cubes_only(tmp_path):
             "knowledge/caveats/c.md": "not collected",
             "knowledge/sql/q.md": "not collected",
             "models/orders/metadata.yml": "name: orders",
-            "models/orders/ref_sql.sql": "SELECT 1",
+            "models/orders/ref_sql.sql": "not collected: SQL body",
             "models/orders/README.md": "not collected",
             "views/top/metadata.yml": "name: top",
-            "views/top/sql.yml": "statement: SELECT 2",
+            "views/top/sql.yml": "not collected: SQL body",
             "cubes/sales/metadata.yml": "name: sales",
             "cubes/stray.yml": "not under an entity dir",
         },
@@ -140,9 +140,7 @@ def test_collect_source_files_rules_models_views_cubes_only(tmp_path):
     assert [(s.item_type, s.entity, s.path.name) for s in got] == [
         (RULE_TYPE, "", "01.md"),
         (MODEL_SOURCE_TYPE, "orders", "metadata.yml"),
-        (MODEL_SOURCE_TYPE, "orders", "ref_sql.sql"),
         (VIEW_SOURCE_TYPE, "top", "metadata.yml"),
-        (VIEW_SOURCE_TYPE, "top", "sql.yml"),
         (CUBE_SOURCE_TYPE, "sales", "metadata.yml"),
     ]
     assert SOURCE_TYPES == {

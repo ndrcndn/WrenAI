@@ -31,7 +31,7 @@ from pathlib import Path
 _DEFAULT_MDL_REL = ("target", "mdl.json")
 _KNOWLEDGE_SUBDIRS = ("sql", "rules")
 _SOURCE_DIRS = ("models", "views", "cubes")
-_SOURCE_SUFFIXES = (".yml", ".yaml", ".sql")
+_SOURCE_FILES = ("metadata.yml", "metadata.yaml")
 
 # Guard against pathological tight loops while still allowing snappy local use.
 MIN_INTERVAL_SECONDS = 1.0
@@ -41,7 +41,7 @@ def _iter_watched_files(project_path: Path) -> list[Path]:
     """Return the sorted list of files whose content is fingerprinted.
 
     Covers the compiled MDL manifest, ``knowledge/sql/*.md``,
-    ``knowledge/rules/*.md`` and every YAML/SQL file under ``models/``,
+    ``knowledge/rules/*.md`` and every ``metadata.yml`` under ``models/``,
     ``views/`` and ``cubes/``. Missing paths are simply absent from the list —
     a watcher started before ``target/mdl.json`` exists will pick it up on the
     poll after it appears.
@@ -61,7 +61,7 @@ def _iter_watched_files(project_path: Path) -> list[Path]:
                 sorted(
                     p
                     for p in d.rglob("*")
-                    if p.is_file() and p.suffix.lower() in _SOURCE_SUFFIXES
+                    if p.is_file() and p.name.lower() in _SOURCE_FILES
                 )
             )
     return files
