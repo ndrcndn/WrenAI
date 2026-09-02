@@ -238,6 +238,13 @@ def index(
         + (f", {result['seed_queries']} seed queries" if result["seed_queries"] else "")
         + "."
     )
+    if result.get("over_budget"):
+        typer.echo(
+            f"  {result['over_budget']} schema row(s) exceeded the "
+            f"{result['max_tokens']}-token budget and were split into "
+            f"{result['split_rows']} row(s); every embedded row fits in full.",
+            err=True,
+        )
 
     if include_instructions:
         from wren.context import discover_project_path  # noqa: PLC0415

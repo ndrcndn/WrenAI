@@ -658,6 +658,8 @@ class TestMemoryStore:
     def test_index_and_context(self, memory_store):
         result = memory_store.index_schema(_MANIFEST)
         assert result["schema_items"] == 11
+        assert result["over_budget"] == 0 and result["split_rows"] == 0
+        assert result["max_tokens"] == 128
 
         # Small schema → full strategy
         ctx = memory_store.get_context(_MANIFEST, "customer order price")
@@ -774,6 +776,41 @@ class TestMemoryStore:
             memory_store.status()["tables"]["schema_items"]
             == 11 + again["source_items"]
         )
+
+    def test_index_schema_splits_rows_over_token_budget(self, memory_store):
+        # A model with 120 columns produces a row far over 128 tokens. It must be
+        # split into rows that each fit, not embedded whole (which truncates).
+        wide = {
+            "catalog": "t",
+            "schema": "s",
+            "models": [
+                {
+                    "name": "wide",
+                    "properties": {"description": "Very wide fact table"},
+                    "columns": [
+                        {"name": f"column_{i}", "type": "int"} for i in range(120)
+                    ],
+                }
+            ],
+        }
+        result = memory_store.index_schema(wide, seed_queries=False)
+        assert result["over_budget"] == 1
+        assert result["split_rows"] > 1
+        # 120 column rows + the split model rows.
+        assert result["schema_items"] == 120 + result["split_rows"]
+
+        count, max_tokens = memory_store.token_budget()
+        rows = memory_store._db.open_table("schema_items").to_pandas()
+        model_rows = rows[rows.item_type == "model"]
+        assert len(model_rows) == result["split_rows"]
+        assert set(model_rows.item_name) == {
+            f"wide#{i + 1}" for i in range(len(model_rows))
+        }
+        assert all(count(t) <= max_tokens for t in rows.text)
+        # Nothing lost: every column name appears in some model row.
+        joined = " ".join(model_rows.text)
+        assert all(f"column_{i}" in joined for i in range(120))
+        assert "Very wide fact table" in joined
 
     def test_index_sources_without_source_dirs(self, memory_store, tmp_path):
         memory_store.index_schema(_MANIFEST)

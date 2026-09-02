@@ -16,6 +16,7 @@ from wren.memory.embeddings import (
 )
 from wren.memory.knowledge_indexer import (
     SOURCE_TYPES,
+    chunk_text,
     collect_source_files,
     extract_source_items,
     summarize_reports,
@@ -228,9 +229,17 @@ class MemoryStore:
         and inserts them into query_history (tagged 'source:seed').
         Old seed entries are replaced; user-confirmed entries are preserved.
 
-        Returns {"schema_items": int, "seed_queries": int}.
+        Every row's text is checked against the embedder's token budget before
+        it is embedded; a row that does not fit is split into several rows
+        (``item_name`` suffixed ``#1``, ``#2``, …) so every embedded row fits
+        in full. ``over_budget`` reports how many rows needed splitting and
+        ``split_rows`` how many rows they became.
+
+        Returns {"schema_items": int, "seed_queries": int, "over_budget": int,
+        "split_rows": int, "max_tokens": int}.
         """
         items = extract_schema_items(manifest)
+        items, over_budget, split_rows, max_tokens = self._fit_items(items)
         table_exists = _SCHEMA_TABLE in _table_names(self._db)
 
         if not items:
@@ -269,7 +278,42 @@ class MemoryStore:
         if seed_queries:
             seed_count = self._upsert_seed_queries(manifest)
 
-        return {"schema_items": schema_count, "seed_queries": seed_count}
+        return {
+            "schema_items": schema_count,
+            "seed_queries": seed_count,
+            "over_budget": over_budget,
+            "split_rows": split_rows,
+            "max_tokens": max_tokens,
+        }
+
+    def _fit_items(self, items: list[dict]) -> tuple[list[dict], int, int, int]:
+        """Validate every row text against the token budget; split what fails.
+
+        Returns ``(items, over_budget, split_rows, max_tokens)``. Rows that
+        fit pass through unchanged. A row over budget is chunked with the
+        same heading → paragraph → line → sentence → word cascade used for
+        source files; each chunk keeps the row's metadata and gets an
+        ``item_name`` suffix. A chunk is never handed to the embedder if it
+        still exceeds ``max_tokens``.
+        """
+        if not items:
+            return items, 0, 0, 0
+        count, max_tokens = self.token_budget()
+        fitted: list[dict] = []
+        over_budget = 0
+        split_rows = 0
+        for item in items:
+            if count(item["text"]) <= max_tokens:
+                fitted.append(item)
+                continue
+            over_budget += 1
+            chunks = chunk_text(item["text"], count, max_tokens)
+            for i, chunk in enumerate(chunks):
+                fitted.append(
+                    {**item, "text": chunk, "item_name": f"{item['item_name']}#{i + 1}"}
+                )
+            split_rows += len(chunks)
+        return fitted, over_budget, split_rows, max_tokens
 
     # ── Knowledge indexing ────────────────────────────────────────────────
 
