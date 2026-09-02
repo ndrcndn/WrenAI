@@ -105,18 +105,16 @@ def test_columns_null_does_not_crash_either_path():
     assert "m" in names
 
 
-def test_columns_null_slots_do_not_consume_summary_budget():
-    # Regression: filter columns before slicing the 20-column summary so
-    # leading nulls don't silently push valid columns out of the embedding
-    # text.
+def test_columns_null_slots_do_not_appear_in_summary():
+    # Null column slots are filtered out; every valid column is summarised
+    # (the model row is not capped to a fixed column count).
     cols = [None] * 5 + [{"name": f"c{i}", "type": "int"} for i in range(25)]
     items = extract_schema_items({"models": [{"name": "m", "columns": cols}]})
     model_rec = next(i for i in items if i["item_type"] == "model")
-    # 20 valid columns summarised, none of the leading nulls.
-    assert model_rec["text"].count("(int)") == 20
+    assert model_rec["text"].count("(int)") == 25
     assert "c0" in model_rec["text"]
-    assert "c19" in model_rec["text"]
-    assert "c20" not in model_rec["text"]
+    assert "c24" in model_rec["text"]
+    assert "None" not in model_rec["text"]
 
 
 @pytest.mark.parametrize("section", ["models", "relationships", "views", "cubes"])

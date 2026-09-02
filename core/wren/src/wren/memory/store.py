@@ -14,6 +14,12 @@ from wren.memory.embeddings import (
     get_embedding_function,
     warm_up,
 )
+from wren.memory.knowledge_indexer import (
+    KNOWLEDGE_TYPES,
+    collect_knowledge_files,
+    extract_knowledge_items,
+    summarize_reports,
+)
 from wren.memory.schema_indexer import (
     SCHEMA_DESCRIBE_THRESHOLD,
     describe_schema,
@@ -26,10 +32,44 @@ _WREN_MEMORY_DIR = Path.home() / ".wren" / "memory"
 _SCHEMA_TABLE = "schema_items"
 _QUERY_TABLE = "query_history"
 
+# Fallback token budget when the embedder exposes no tokenizer (tests, exotic
+# models). Matches the default model's max_seq_length.
+_FALLBACK_MAX_TOKENS = 128
+
 
 def _esc(value: str) -> str:
     """Escape single quotes for LanceDB where-clause literals."""
     return value.replace("'", "''")
+
+
+def _split_tags(tags: str | None) -> list[str]:
+    """Tags are stored space-separated; accept commas from CLI input too."""
+    return [t for t in (tags or "").replace(",", " ").split() if t]
+
+
+def normalize_tags(tags: str | None, *, default_source: str = "user") -> str:
+    """Return a space-separated tag string that always carries a ``source:``.
+
+    Every ingestion path must produce the same shape so the ``--source``
+    filters (exact-token match) see every row.
+    """
+    parts = _split_tags(tags)
+    if not any(p.startswith("source:") for p in parts):
+        parts.append(f"source:{default_source}")
+    return " ".join(parts)
+
+
+def _has_source(tags: str | None, source: str) -> bool:
+    return f"source:{source}" in _split_tags(tags)
+
+
+def _source_where(source: str) -> str:
+    """LanceDB filter matching ``source:<x>`` as a whole space-separated token."""
+    tok = _esc(f"source:{source}")
+    return (
+        f"tags = '{tok}' OR tags LIKE '{tok} %' "
+        f"OR tags LIKE '% {tok}' OR tags LIKE '% {tok} %'"
+    )
 
 
 def _schema_items_arrow_schema(dim: int = _DEFAULT_DIM) -> pa.Schema:
@@ -231,6 +271,80 @@ class MemoryStore:
 
         return {"schema_items": schema_count, "seed_queries": seed_count}
 
+    # ── Knowledge indexing ────────────────────────────────────────────────
+
+    def token_budget(self) -> tuple:
+        """Return ``(count_tokens, max_tokens)`` for the active embedder.
+
+        Uses the sentence-transformers tokenizer and ``max_seq_length`` when
+        available, so chunks are validated against the exact limit the model
+        truncates at. Falls back to a word-count heuristic otherwise.
+        """
+        model = None
+        getter = getattr(self._embed_fn, "get_embedding_model", None)
+        if callable(getter):
+            try:
+                model = getter()
+            except Exception:  # noqa: BLE001 - fall back to heuristic below
+                model = None
+        tokenizer = getattr(model, "tokenizer", None)
+        max_tokens = getattr(model, "max_seq_length", None)
+        if tokenizer is not None and isinstance(max_tokens, int) and max_tokens > 0:
+
+            def count(text: str) -> int:
+                return len(tokenizer(text, add_special_tokens=True)["input_ids"])
+
+            return count, max_tokens
+
+        def approx(text: str) -> int:
+            # Subword tokenizers average ~1.3 tokens per word on prose.
+            return int(len(text.split()) * 1.3) + 2
+
+        return approx, _FALLBACK_MAX_TOKENS
+
+    def index_knowledge(self, project_path: Path, manifest: dict) -> dict:
+        """Embed ``knowledge/{rules,glossary,metrics,caveats}/*.md`` as rows.
+
+        Each file is checked against the embedder's token budget and chunked
+        when needed (see :mod:`wren.memory.knowledge_indexer`). Existing
+        knowledge rows are replaced; schema rows are untouched, so this can
+        run after :meth:`index_schema` without re-embedding the schema.
+
+        Returns ``{"knowledge_items": int, "summary": {...}, "files": [...]}``
+        where ``files`` holds one report per source file.
+        """
+        files = collect_knowledge_files(project_path)
+        count, max_tokens = self.token_budget()
+        now = datetime.now(timezone.utc)
+        items, reports = extract_knowledge_items(
+            files, project_path, manifest_hash(manifest), now, count, max_tokens
+        )
+
+        table_exists = _SCHEMA_TABLE in _table_names(self._db)
+        if table_exists:
+            types = ", ".join(f"'{t}'" for t in sorted(KNOWLEDGE_TYPES))
+            self._db.open_table(_SCHEMA_TABLE).delete(f"item_type IN ({types})")
+
+        if items:
+            texts = [item["text"] for item in items]
+            vectors = self._embed_fn.compute_source_embeddings(texts)
+            self._validate_and_set_dim(len(vectors[0]))
+            for item, vec in zip(items, vectors):
+                item["vector"] = vec
+            if table_exists:
+                self._db.open_table(_SCHEMA_TABLE).add(items)
+            else:
+                self._db.create_table(
+                    _SCHEMA_TABLE, items, schema=self._schema_table_schema()
+                )
+
+        return {
+            "knowledge_items": len(items),
+            "max_tokens": max_tokens,
+            "summary": summarize_reports(reports),
+            "files": [r.as_dict() for r in reports],
+        }
+
     def _upsert_seed_queries(self, manifest: dict) -> int:
         """Replace seed queries after their embeddings are ready."""
         from wren.memory.seed_queries import (  # noqa: PLC0415
@@ -268,8 +382,8 @@ class MemoryStore:
         if table.count_rows() == 0:
             return False
         current_hash = manifest_hash(manifest)
-        df = table.to_pandas()
-        return bool((df["mdl_hash"] == current_hash).all())
+        stale = table.count_rows(filter=f"mdl_hash != '{_esc(current_hash)}'")
+        return stale == 0
 
     # ── Plain-text / hybrid ────────────────────────────────────────────────
 
@@ -295,21 +409,38 @@ class MemoryStore:
         uses embedding search with optional filters (``strategy="search"``).
 
         Returns a dict with keys ``strategy``, ``schema`` (full) or
-        ``results`` (search).
+        ``results`` (search), plus ``note`` when the index is missing or
+        stale. A missing index falls back to the full text rather than an
+        empty result; a stale index (rows from a previous manifest) still
+        returns the best matches it has, with the note saying so, instead of
+        filtering everything out.
         """
         text = describe_schema(manifest)
         if len(text) <= threshold:
             return {"strategy": "full", "schema": text}
 
-        mdl_hash_val = manifest_hash(manifest)
+        if _SCHEMA_TABLE not in _table_names(self._db):
+            return {
+                "strategy": "full",
+                "schema": text,
+                "note": "schema index not built — run `wren memory index`.",
+            }
+
+        current = self.schema_is_current(manifest)
         results = self._search_schema(
             query,
             limit=limit,
             item_type=item_type,
             model_name=model_name,
-            mdl_hash=mdl_hash_val,
+            mdl_hash=manifest_hash(manifest) if current else None,
         )
-        return {"strategy": "search", "results": results}
+        out: dict = {"strategy": "search", "results": results}
+        if not current:
+            out["note"] = (
+                "schema index is stale (built from a previous MDL); results "
+                "come from the last indexed schema — run `wren memory index`."
+            )
+        return out
 
     def _search_schema(
         self,
@@ -354,7 +485,12 @@ class MemoryStore:
         datasource: str | None = None,
         tags: str | None = None,
     ) -> None:
-        """Store a NL→SQL pair with embedding of the NL query."""
+        """Store a NL→SQL pair with embedding of the NL query.
+
+        Tags are normalised to the space-separated form used everywhere else
+        and always carry a ``source:`` token (default ``source:user``), so the
+        pair is visible to every ``--source`` filter.
+        """
         now = datetime.now(timezone.utc)
         vectors = self._embed_fn.compute_source_embeddings([nl_query])
         self._validate_and_set_dim(len(vectors[0]))
@@ -366,7 +502,7 @@ class MemoryStore:
             "sql_query": sql_query,
             "datasource": datasource or "",
             "created_at": now,
-            "tags": tags or "",
+            "tags": normalize_tags(tags),
         }
 
         if _QUERY_TABLE in _table_names(self._db):
@@ -427,7 +563,7 @@ class MemoryStore:
         # Ensure a clean 0-based index matching the unfiltered table.
         df = df.reset_index(drop=True)
         if source:
-            df = df[df["tags"] == f"source:{source}"]
+            df = df[df["tags"].apply(lambda t: _has_source(t, source))]
         total = len(df)
         df = df.sort_values("created_at", ascending=False)
         rows = df.iloc[offset : offset + limit]
@@ -443,8 +579,7 @@ class MemoryStore:
         if _QUERY_TABLE not in _table_names(self._db):
             return 0
         table = self._db.open_table(_QUERY_TABLE)
-        df = table.to_pandas()
-        return int((df["tags"] == f"source:{source}").sum())
+        return int(table.count_rows(filter=_source_where(source)))
 
     def forget_queries_by_ids(self, row_ids: list[int]) -> int:
         """Delete rows at the given positional indices.  Returns deleted count."""
@@ -475,7 +610,7 @@ class MemoryStore:
         if _QUERY_TABLE not in _table_names(self._db):
             return 0
         table = self._db.open_table(_QUERY_TABLE)
-        where = f"tags = 'source:{_esc(source)}'"
+        where = _source_where(source)
         before = table.count_rows()
         table.delete(where)
         return before - table.count_rows()
@@ -493,7 +628,7 @@ class MemoryStore:
         table = self._db.open_table(_QUERY_TABLE)
         df = table.to_pandas()
         if source:
-            df = df[df["tags"] == f"source:{source}"]
+            df = df[df["tags"].apply(lambda t: _has_source(t, source))]
         df = df.sort_values("created_at", ascending=True)
         return df.drop(columns=["vector"], errors="ignore").to_dict("records")
 
@@ -531,8 +666,8 @@ class MemoryStore:
         now = datetime.now(timezone.utc)
         records = []
         for p, vec in zip(pairs, vectors):
-            record_tags = (
-                tags if tags is not None else f"source:{p.get('source', 'user')}"
+            record_tags = normalize_tags(
+                tags, default_source=str(p.get("source") or "user")
             )
             records.append(
                 {

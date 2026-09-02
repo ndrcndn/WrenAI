@@ -25,10 +25,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Default sources to watch, relative to the project root. The MDL manifest is
-# the compiled schema; knowledge/sql holds the NL→SQL pairs. Both feed the
-# index, so a change to either should trigger a rebuild.
+# the compiled schema; knowledge/sql holds the NL→SQL pairs; the other
+# knowledge subdirs are embedded as chunks. All feed the index, so a change to
+# any of them should trigger a rebuild.
 _DEFAULT_MDL_REL = ("target", "mdl.json")
-_KNOWLEDGE_SQL_REL = ("knowledge", "sql")
+_KNOWLEDGE_SUBDIRS = ("sql", "rules", "glossary", "metrics", "caveats")
 
 # Guard against pathological tight loops while still allowing snappy local use.
 MIN_INTERVAL_SECONDS = 1.0
@@ -37,17 +38,19 @@ MIN_INTERVAL_SECONDS = 1.0
 def _iter_watched_files(project_path: Path) -> list[Path]:
     """Return the sorted list of files whose content is fingerprinted.
 
-    Covers the compiled MDL manifest plus every ``knowledge/sql/*.md`` pair.
-    Missing paths are simply absent from the list — a watcher started before
-    ``target/mdl.json`` exists will pick it up on the poll after it appears.
+    Covers the compiled MDL manifest plus every ``knowledge/<subdir>/*.md``
+    file (sql, rules, glossary, metrics, caveats). Missing paths are simply
+    absent from the list — a watcher started before ``target/mdl.json`` exists
+    will pick it up on the poll after it appears.
     """
     files: list[Path] = []
     mdl = project_path.joinpath(*_DEFAULT_MDL_REL)
     if mdl.is_file():
         files.append(mdl)
-    sql_dir = project_path.joinpath(*_KNOWLEDGE_SQL_REL)
-    if sql_dir.is_dir():
-        files.extend(sorted(p for p in sql_dir.glob("*.md") if p.is_file()))
+    for subdir in _KNOWLEDGE_SUBDIRS:
+        d = project_path / "knowledge" / subdir
+        if d.is_dir():
+            files.extend(sorted(p for p in d.glob("*.md") if p.is_file()))
     return files
 
 

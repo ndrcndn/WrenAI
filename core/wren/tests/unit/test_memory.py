@@ -688,10 +688,96 @@ class TestMemoryStore:
         assert result["strategy"] == "search"
         assert all(r["model_name"] == "orders" for r in result["results"])
 
-    def test_context_empty_store(self, memory_store):
+    def test_context_empty_store_falls_back_to_full_text(self, memory_store):
+        # No index yet: the caller still gets the schema, plus why.
         result = memory_store.get_context(_MANIFEST, "anything", threshold=10)
+        assert result["strategy"] == "full"
+        assert "### Model: orders" in result["schema"]
+        assert "not built" in result["note"]
+
+    def test_context_stale_index_returns_results_with_note(self, memory_store):
+        memory_store.index_schema(_MANIFEST)
+        modified = {**_MANIFEST, "catalog": "changed"}
+        result = memory_store.get_context(modified, "customer orders", threshold=10)
         assert result["strategy"] == "search"
-        assert result["results"] == []
+        assert len(result["results"]) > 0  # not filtered to nothing
+        assert "stale" in result["note"]
+
+        # Once re-indexed for the new manifest the note disappears.
+        memory_store.index_schema(modified)
+        fresh = memory_store.get_context(modified, "customer orders", threshold=10)
+        assert "note" not in fresh
+        assert len(fresh["results"]) > 0
+
+    def test_index_knowledge_embeds_chunks_and_reports(self, memory_store, tmp_path):
+        proj = tmp_path / "proj"
+        (proj / "knowledge" / "rules").mkdir(parents=True)
+        (proj / "knowledge" / "glossary").mkdir()
+        (proj / "knowledge" / "rules" / "01_fiscal.md").write_text(
+            "# Fiscal year\nThe fiscal year starts on 1 April; Q1 is April–June.",
+            encoding="utf-8",
+        )
+        long_rule = "\n\n".join(
+            f"## Rule {i}\n" + " ".join(["retained assignment wins"] * 30)
+            for i in range(6)
+        )
+        (proj / "knowledge" / "rules" / "02_long.md").write_text(
+            long_rule, encoding="utf-8"
+        )
+        (proj / "knowledge" / "glossary" / "empty.md").write_text("", encoding="utf-8")
+
+        memory_store.index_schema(_MANIFEST)
+        report = memory_store.index_knowledge(proj, _MANIFEST)
+
+        assert report["max_tokens"] == 128  # default model's max_seq_length
+        assert report["summary"]["files"] == 3
+        assert report["summary"]["embedded"] == 1
+        assert report["summary"]["chunked"] == 1
+        assert report["summary"]["skipped"] == 1
+        assert report["knowledge_items"] == report["summary"]["chunks"]
+        long = next(f for f in report["files"] if f["path"].endswith("02_long.md"))
+        assert long["chunks"] > 1 and long["largest_chunk"] <= 128
+
+        # Rows live next to schema items and are searchable by type.
+        info = memory_store.status()
+        assert info["tables"]["schema_items"] == 11 + report["knowledge_items"]
+        ctx = memory_store.get_context(
+            _MANIFEST, "when does the fiscal year start", item_type="rule", threshold=10
+        )
+        assert ctx["strategy"] == "search"
+        assert ctx["results"], "rule chunks must be retrievable"
+        assert all(r["item_type"] == "rule" for r in ctx["results"])
+        assert "1 April" in ctx["results"][0]["text"]
+        assert "note" not in ctx  # knowledge rows carry the current hash
+
+        # Re-running replaces knowledge rows instead of duplicating them.
+        again = memory_store.index_knowledge(proj, _MANIFEST)
+        assert (
+            memory_store.status()["tables"]["schema_items"]
+            == 11 + again["knowledge_items"]
+        )
+
+    def test_index_knowledge_without_knowledge_dir(self, memory_store, tmp_path):
+        memory_store.index_schema(_MANIFEST)
+        report = memory_store.index_knowledge(tmp_path, _MANIFEST)
+        assert report["knowledge_items"] == 0
+        assert report["summary"]["files"] == 0
+        assert memory_store.status()["tables"]["schema_items"] == 11
+
+    def test_store_query_default_source_tag_visible_to_filters(self, memory_store):
+        memory_store.store_query(nl_query="how many widgets", sql_query="SELECT 1")
+        memory_store.store_query(
+            nl_query="tagged one", sql_query="SELECT 2", tags="team:a, verified"
+        )
+        rows, total = memory_store.list_queries(source="user")
+        assert total == 2
+        assert {r["tags"] for r in rows} == {
+            "source:user",
+            "team:a verified source:user",
+        }
+        assert memory_store.count_queries_by_source("user") == 2
+        assert memory_store.forget_queries_by_source("user") == 2
+        assert memory_store.count_queries_by_source("user") == 0
 
     def test_schema_is_current(self, memory_store):
         memory_store.index_schema(_MANIFEST)

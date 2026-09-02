@@ -612,7 +612,8 @@ def build(
     """Build into target/mdl.json for the engine.
 
     Default mode: reads wren_project.yml, models/*/metadata.yml (+ref_sql.sql),
-    views/*/metadata.yml (+sql.yml), relationships.yml, and knowledge/.
+    views/*/metadata.yml (+sql.yml), relationships.yml and cubes/. knowledge/
+    is not part of the manifest; `wren memory index` embeds it.
 
     With --from-osi: reads an Open Semantic Interchange YAML file and emits
     MDL JSON directly. The OSI file stays as the single source of truth; no

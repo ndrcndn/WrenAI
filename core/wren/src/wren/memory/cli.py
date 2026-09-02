@@ -144,6 +144,29 @@ def _print_results(results: list[dict], output: str) -> None:
                 typer.echo(str(r))
 
 
+def _echo_knowledge_report(report: dict) -> None:
+    """Print the per-file knowledge indexing outcome.
+
+    Summary line to stdout; every chunked or skipped file to stderr with its
+    token count / reason, so nothing is embedded (or dropped) silently.
+    """
+    s = report["summary"]
+    typer.echo(
+        f"Indexed {report['knowledge_items']} knowledge chunk(s) from "
+        f"{s['files']} file(s) — {s['embedded']} whole, {s['chunked']} chunked, "
+        f"{s['skipped']} skipped (budget {report['max_tokens']} tokens)."
+    )
+    for f in report["files"]:
+        if f["status"] == "chunked":
+            typer.echo(
+                f"  chunked  {f['path']}: {f['tokens']} tokens → {f['chunks']} "
+                f"chunk(s), largest {f['largest_chunk']}",
+                err=True,
+            )
+        elif f["status"] == "skipped":
+            typer.echo(f"  skipped  {f['path']}: {f['reason']}", err=True)
+
+
 # ── Commands ──────────────────────────────────────────────────────────────
 
 
@@ -155,7 +178,11 @@ def index(
         bool,
         typer.Option(
             "--instructions/--no-instructions",
-            help="Also index user instructions from project directory.",
+            help=(
+                "Also embed knowledge/{rules,glossary,metrics,caveats}/*.md as "
+                "searchable chunks (each file validated against the embedder's "
+                "token budget and split when needed)."
+            ),
         ),
     ] = True,
     no_seed: Annotated[
@@ -170,8 +197,9 @@ def index(
     """Index the project for recall.
 
     With the ``memory`` extra: builds the LanceDB semantic index (schema + seed
-    + knowledge/sql pairs). Without it: the grep backend reads knowledge/sql/*.md
-    directly, so there is nothing to build.
+    + knowledge/sql pairs + knowledge/{rules,glossary,metrics,caveats} chunks).
+    Without it: the grep backend reads knowledge/sql/*.md directly, so there is
+    nothing to build.
     """
     from wren.memory.index_backend import resolve_backend  # noqa: PLC0415
 
@@ -197,28 +225,6 @@ def index(
 
     manifest = _load_manifest(mdl)
 
-    if include_instructions and mdl is None:
-        try:
-            from wren.context import (  # noqa: I001, PLC0415
-                discover_project_path,
-                load_rules,
-            )
-
-            project_path = discover_project_path()
-            instr, _ = load_rules(project_path)
-            if instr:
-                manifest["_instructions"] = instr
-        except (
-            SystemExit,
-            FileNotFoundError,
-            PermissionError,
-            IsADirectoryError,
-            UnicodeDecodeError,
-            ImportError,
-            ModuleNotFoundError,
-        ):
-            pass  # instructions are optional; never fail index because of them
-
     mem_store = _get_store(path)
     try:
         result = mem_store.index_schema(manifest, seed_queries=not no_seed)
@@ -230,6 +236,16 @@ def index(
         + (f", {result['seed_queries']} seed queries" if result["seed_queries"] else "")
         + "."
     )
+
+    if include_instructions:
+        from wren.context import discover_project_path  # noqa: PLC0415
+
+        try:
+            project_path = discover_project_path()
+        except SystemExit as e:
+            typer.echo(f"knowledge/ not indexed: {e}", err=True)
+        else:
+            _echo_knowledge_report(mem_store.index_knowledge(project_path, manifest))
 
     # ── Rebuild query history from knowledge/sql/*.md (source of truth) ──
     # Legacy queries.yml is still loaded when present, for the transition.
@@ -644,6 +660,7 @@ def watch(
         manifest = _load_manifest(mdl)
         mem_store = _get_store(path)
         result = mem_store.index_schema(manifest, seed_queries=True)
+        kres = mem_store.index_knowledge(project_path, manifest)
         from wren.memory.markdown import load_query_pairs  # noqa: PLC0415
 
         md_pairs = load_query_pairs(project_path)
@@ -652,7 +669,8 @@ def watch(
             res = mem_store.load_queries(md_pairs, upsert=True)
             loaded = res["loaded"] + res["updated"]
         typer.echo(
-            f"Reindexed {result['schema_items']} schema item(s)"
+            f"Reindexed {result['schema_items']} schema item(s), "
+            f"{kres['knowledge_items']} knowledge chunk(s)"
             + (f", {loaded} pair(s)" if loaded else "")
             + "."
         )

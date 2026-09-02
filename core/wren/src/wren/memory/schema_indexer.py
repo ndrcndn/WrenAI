@@ -370,7 +370,7 @@ def _model_record(model: dict, mdl_h: str, now: datetime) -> dict:
         for c in (_as_list(model.get("columns"), "model", name, "columns"))
         if isinstance(c, dict) and c.get("name")
     ]
-    col_summaries = ", ".join(f"{c['name']} ({c.get('type', '?')})" for c in cols[:20])
+    col_summaries = ", ".join(f"{c['name']} ({c.get('type', '?')})" for c in cols)
     pk = model.get("primaryKey") or ""
 
     description = _prop_description(model)
@@ -478,8 +478,16 @@ def _view_record(view: dict, mdl_h: str, now: datetime) -> dict:
     name = view["name"]
     stmt = view.get("statement", "")
     truncated = stmt[:200] + ("…" if len(stmt) > 200 else "")
+    description = _prop_description(view)
 
-    text = f"View '{name}'. SQL: {truncated}"
+    # Description first: it is the semantic payload; the SQL head only
+    # disambiguates similarly-described views.
+    parts = [f"View '{name}'"]
+    if description:
+        parts.append(f": {description}")
+    if truncated:
+        parts.append(f". SQL: {truncated}")
+    text = "".join(parts)
 
     return {
         "text": text,
@@ -513,7 +521,10 @@ def _cube_record(cube: dict, mdl_h: str, now: datetime) -> dict:
         if isinstance(td, dict)
     )
 
+    description = _prop_description(cube)
     parts = [f"Cube '{name}' over '{base}'"]
+    if description:
+        parts.append(f": {description}")
     if measures:
         parts.append(f". Measures: {measures}")
     if dims:

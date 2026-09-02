@@ -399,7 +399,10 @@ def _register_knowledge_tools(mcp: FastMCP, ctx: ServeContext) -> None:
         Uses embedding search when the ``memory`` extra is installed and the
         schema has been indexed (``wren memory index``); otherwise falls back
         to the full plain-text schema description (same content as
-        ``describe_schema``).
+        ``describe_schema``). Results also include knowledge chunks
+        (``item_type`` rule / glossary / metric / caveat) when
+        ``knowledge/`` was indexed. A ``note`` key is present when the index
+        is missing or stale.
         """
         from wren.context import build_json  # noqa: PLC0415
         from wren.memory import schema_indexer  # noqa: PLC0415
@@ -490,8 +493,10 @@ def _register_knowledge_tools(mcp: FastMCP, ctx: ServeContext) -> None:
     def list_knowledge() -> dict:
         """List knowledge files readable via the wren://knowledge/{path} resource.
 
-        Walks knowledge/ recursively (knowledge.yml, rules/*.md, sql/*.md) and
-        reports whether AGENTS.md exists at the project root.
+        Lists knowledge/ top-level files and one directory level down
+        (knowledge.yml, rules/*.md, sql/*.md, ...) — deeper files are not
+        served by the resource templates — and reports whether AGENTS.md
+        exists at the project root.
         """
         knowledge_dir = ctx.project / "knowledge"
         files: list[str] = []
