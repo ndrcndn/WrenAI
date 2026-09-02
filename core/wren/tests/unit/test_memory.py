@@ -766,9 +766,15 @@ class TestMemoryStore:
 
         # Source rows carry the entity name so model_name filters reach them.
         src = memory_store.get_context(
-            _MANIFEST, "shipping priority", model_name="orders", threshold=10
+            _MANIFEST,
+            "shipping priority",
+            model_name="orders",
+            item_type="model_source",
+            threshold=10,
         )
-        assert any(r["item_type"] == "model_source" for r in src["results"])
+        assert src["results"], "model_name filter must reach the source rows"
+        assert all(r["model_name"] == "orders" for r in src["results"])
+        assert "shipping priority" in src["results"][0]["text"]
 
         # Re-running replaces source rows instead of duplicating them.
         again = memory_store.index_sources(proj, _MANIFEST)
