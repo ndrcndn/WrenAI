@@ -14,7 +14,6 @@ import re
 import sys
 from pathlib import Path
 
-import click
 import pytest
 import typer
 
@@ -26,12 +25,21 @@ pytestmark = pytest.mark.unit
 
 
 def _flags(cmd) -> set[str]:
+    """Long flags on *cmd*.
+
+    Duck-typed on ``opts``/``secondary_opts`` rather than
+    ``isinstance(param, click.Option)``: typer >= 0.27 builds its own
+    ``TyperOption`` that is not a ``click.Option`` subclass, which would
+    otherwise make every command look flag-less.
+    """
     flags: set[str] = set()
     for param in getattr(cmd, "params", []):
-        if isinstance(param, click.Option):
-            for opt in param.opts + param.secondary_opts:
-                if opt.startswith("--"):
-                    flags.add(opt)
+        opts = getattr(param, "opts", None)
+        if not opts:
+            continue
+        for opt in list(opts) + list(getattr(param, "secondary_opts", [])):
+            if opt.startswith("--"):
+                flags.add(opt)
     return flags
 
 
@@ -41,11 +49,14 @@ def _walk(cmd, prefix: str = "") -> dict[str, set[str]]:
     Uses ``cmd.commands`` directly rather than ``cmd.list_commands(ctx=None)``
     because the latter passes a ``None`` context — Click 8.4+ tightened that
     path and started returning ``[]``, which would silently collapse this
-    map to the root command and neuter the guard.
+    map to the root command and neuter the guard. Recursion is keyed on the
+    presence of a ``commands`` mapping, not ``isinstance(cmd, click.Group)``:
+    typer >= 0.27's ``TyperGroup`` is not a ``click.Group`` subclass.
     """
     out: dict[str, set[str]] = {prefix.strip(): _flags(cmd)}
-    if isinstance(cmd, click.Group):
-        for name, sub in cmd.commands.items():
+    subcommands = getattr(cmd, "commands", None)
+    if isinstance(subcommands, dict):
+        for name, sub in subcommands.items():
             out.update(_walk(sub, f"{prefix} {name}".strip()))
     return out
 

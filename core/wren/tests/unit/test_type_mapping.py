@@ -131,9 +131,7 @@ def test_parse_types_empty_list() -> None:
         ("", "postgres", "bigquery", ""),
     ],
 )
-def test_translate_type(
-    type_str: str, source: str, target: str, expected: str
-) -> None:
+def test_translate_type(type_str: str, source: str, target: str, expected: str) -> None:
     assert translate_type(type_str, source, target) == expected
 
 
@@ -164,9 +162,7 @@ def test_translate_types_does_not_mutate_input() -> None:
 
 def test_translate_types_custom_type_field() -> None:
     columns = [{"col": "x", "data_type": "int8"}]
-    results = translate_types(
-        columns, "postgres", "bigquery", type_field="data_type"
-    )
+    results = translate_types(columns, "postgres", "bigquery", type_field="data_type")
     assert results[0]["type"] == "INT64"
 
 
@@ -294,7 +290,9 @@ def test_cli_translate_types_stdin() -> None:
     assert data[0]["column"] == "id"
 
 
-def test_cli_translate_types_missing_file() -> None:
+def test_cli_translate_types_missing_file(tmp_path) -> None:
+    # A path under tmp_path is guaranteed absent; a fixed absolute path such as
+    # /nonexistent may exist (root-owned) on some hosts and raise PermissionError.
     result = _run_wren(
         "utils",
         "translate-types",
@@ -303,7 +301,7 @@ def test_cli_translate_types_missing_file() -> None:
         "--target",
         "bigquery",
         "--input",
-        "/nonexistent/does_not_exist.json",
+        str(tmp_path / "missing" / "does_not_exist.json"),
     )
     assert result.returncode == 1
     assert "file not found" in result.stderr

@@ -326,7 +326,9 @@ def test_no_data_source():
     """Missing dataSource — wren_project.yml omits data_source field."""
     mdl = {"catalog": "wren", "schema": "public", "models": [], "views": []}
     files = convert_mdl_to_project(mdl)
-    project = yaml.safe_load(next(f for f in files if f.relative_path == "wren_project.yml").content)
+    project = yaml.safe_load(
+        next(f for f in files if f.relative_path == "wren_project.yml").content
+    )
     assert "data_source" not in project
 
 
@@ -379,7 +381,14 @@ def test_cli_init_from_mdl(tmp_path: Path, sample_mdl_file: Path):
     project_dir = tmp_path / "project"
     result = runner.invoke(
         app,
-        ["context", "init", "--path", str(project_dir), "--from-mdl", str(sample_mdl_file)],
+        [
+            "context",
+            "init",
+            "--path",
+            str(project_dir),
+            "--from-mdl",
+            str(sample_mdl_file),
+        ],
     )
     assert result.exit_code == 0, result.output
     assert "Imported MDL" in result.output
@@ -393,9 +402,12 @@ def test_cli_init_from_mdl_file_not_found(tmp_path: Path):
     from wren.cli import app
 
     runner = CliRunner()
+    # A path under tmp_path is guaranteed absent; a fixed absolute path such as
+    # /nonexistent may exist (root-owned) on some hosts and raise PermissionError.
+    missing = tmp_path / "missing" / "mdl.json"
     result = runner.invoke(
         app,
-        ["context", "init", "--path", str(tmp_path), "--from-mdl", "/nonexistent/mdl.json"],
+        ["context", "init", "--path", str(tmp_path), "--from-mdl", str(missing)],
     )
     assert result.exit_code != 0
     assert "not found" in result.output
@@ -411,7 +423,14 @@ def test_cli_init_from_mdl_no_force_existing(tmp_path: Path, sample_mdl_file: Pa
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["context", "init", "--path", str(tmp_path), "--from-mdl", str(sample_mdl_file)],
+        [
+            "context",
+            "init",
+            "--path",
+            str(tmp_path),
+            "--from-mdl",
+            str(sample_mdl_file),
+        ],
     )
     assert result.exit_code != 0
     assert "already exists" in result.output
