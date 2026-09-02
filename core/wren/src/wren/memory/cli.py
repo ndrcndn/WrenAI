@@ -181,7 +181,7 @@ def index(
         typer.Option(
             "--instructions/--no-instructions",
             help=(
-                "Also embed knowledge/rules/*.md and the models/, views/, cubes/ "
+                "Also embed knowledge/rules/*.md and the views/ and cubes/ "
                 "metadata.yml files as searchable chunks (each file validated against "
                 "the embedder's token budget and split when needed)."
             ),
@@ -199,7 +199,7 @@ def index(
     """Index the project for recall.
 
     With the ``memory`` extra: builds the LanceDB semantic index (schema + seed
-    + knowledge/sql pairs + knowledge/rules and models/views/cubes source chunks).
+    + knowledge/sql pairs + knowledge/rules and views/cubes metadata chunks).
     Without it: the grep backend reads knowledge/sql/*.md directly, so there is
     nothing to build.
     """

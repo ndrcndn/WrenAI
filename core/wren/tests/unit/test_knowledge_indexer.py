@@ -127,9 +127,8 @@ def test_collect_source_files_rules_models_views_cubes_only(tmp_path):
             "knowledge/metrics/m.md": "not collected",
             "knowledge/caveats/c.md": "not collected",
             "knowledge/sql/q.md": "not collected",
-            "models/orders/metadata.yml": "name: orders",
+            "models/orders/metadata.yml": "not collected: models are MDL rows",
             "models/orders/ref_sql.sql": "not collected: SQL body",
-            "models/orders/README.md": "not collected",
             "views/top/metadata.yml": "name: top",
             "views/top/sql.yml": "not collected: SQL body",
             "cubes/sales/metadata.yml": "name: sales",
@@ -139,7 +138,6 @@ def test_collect_source_files_rules_models_views_cubes_only(tmp_path):
     got = collect_source_files(proj)
     assert [(s.item_type, s.entity, s.path.name) for s in got] == [
         (RULE_TYPE, "", "01.md"),
-        (MODEL_SOURCE_TYPE, "orders", "metadata.yml"),
         (VIEW_SOURCE_TYPE, "top", "metadata.yml"),
         (CUBE_SOURCE_TYPE, "sales", "metadata.yml"),
     ]
@@ -165,7 +163,7 @@ def test_extract_reports_every_file_and_never_exceeds_budget(tmp_path):
             "knowledge/rules/long.md": "# T\n" + " ".join(f"w{i}" for i in range(40)),
             "knowledge/rules/empty.md": "   \n",
             "knowledge/rules/bad.md": b"\xff\xfe\x00garbage",
-            "models/orders/metadata.yml": "\n".join(
+            "views/orders/metadata.yml": "\n".join(
                 f"- name: c{i}\n  type: int" for i in range(8)
             ),
         },
@@ -192,8 +190,8 @@ def test_extract_reports_every_file_and_never_exceeds_budget(tmp_path):
     assert bad.status == "skipped"
     assert bad.reason.startswith("not UTF-8")
 
-    model = by_path["models/orders/metadata.yml"]
-    assert model.item_type == MODEL_SOURCE_TYPE
+    model = by_path["views/orders/metadata.yml"]
+    assert model.item_type == VIEW_SOURCE_TYPE
     assert model.status == "chunked"
 
     # Items: one per chunk, shaped like schema_items rows.
@@ -221,7 +219,7 @@ def test_extract_reports_every_file_and_never_exceeds_budget(tmp_path):
     assert summary == {
         "files": 5,
         "chunks": 1 + long.chunks + model.chunks,
-        "by_type": {RULE_TYPE: 1 + long.chunks, MODEL_SOURCE_TYPE: model.chunks},
+        "by_type": {RULE_TYPE: 1 + long.chunks, VIEW_SOURCE_TYPE: model.chunks},
         "embedded": 1,
         "chunked": 2,
         "skipped": 2,

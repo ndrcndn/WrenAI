@@ -26,11 +26,11 @@ from pathlib import Path
 
 # Default sources to watch, relative to the project root. The MDL manifest is
 # the compiled schema; knowledge/sql holds the NL→SQL pairs; knowledge/rules
-# and the models/views/cubes source files are embedded as chunks. All feed the
+# and the views/cubes metadata files are embedded as chunks. All feed the
 # index, so a change to any of them should trigger a rebuild.
 _DEFAULT_MDL_REL = ("target", "mdl.json")
 _KNOWLEDGE_SUBDIRS = ("sql", "rules")
-_SOURCE_DIRS = ("models", "views", "cubes")
+_SOURCE_DIRS = ("views", "cubes")
 _SOURCE_FILES = ("metadata.yml", "metadata.yaml")
 
 # Guard against pathological tight loops while still allowing snappy local use.
@@ -41,8 +41,8 @@ def _iter_watched_files(project_path: Path) -> list[Path]:
     """Return the sorted list of files whose content is fingerprinted.
 
     Covers the compiled MDL manifest, ``knowledge/sql/*.md``,
-    ``knowledge/rules/*.md`` and every ``metadata.yml`` under ``models/``,
-    ``views/`` and ``cubes/``. Missing paths are simply absent from the list —
+    ``knowledge/rules/*.md`` and every ``metadata.yml`` under ``views/`` and
+    ``cubes/``. Missing paths are simply absent from the list —
     a watcher started before ``target/mdl.json`` exists will pick it up on the
     poll after it appears.
     """

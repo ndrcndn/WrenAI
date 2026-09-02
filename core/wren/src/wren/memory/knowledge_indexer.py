@@ -3,7 +3,6 @@
 Sources:
 
 * ``knowledge/rules/*.md``            → ``item_type="rule"``
-* ``models/<name>/metadata.yml``      → ``item_type="model_source"`` (model_name=<name>)
 * ``views/<name>/metadata.yml``       → ``item_type="view_source"``  (model_name=<name>)
 * ``cubes/<name>/metadata.yml``       → ``item_type="cube_source"``  (model_name=<name>)
 
@@ -11,9 +10,10 @@ SQL bodies (``views/<name>/sql.yml``, ``models/<name>/*.sql``) are not embedded:
 they are fragments with no natural-language signal; the agent reads exact SQL
 through ``describe_model`` / the ``wren://knowledge`` resources.
 
-These complement the compiled-MDL rows (model/column/view/cube summaries): the
-MDL rows are short synthesised descriptions, the source rows are the full
-file content, so a question can match on anything written in the definition.
+These complement the compiled-MDL rows (model/column/view/cube summaries).
+``models/<name>/metadata.yml`` is not embedded: every model and column is
+already an MDL row carrying the same fields, so the file adds only YAML
+boilerplate. ``model_source`` remains a known type so stale rows are purged.
 
 Every file is validated against the embedding model's token budget before it
 is embedded. A file that fits is stored as one row; a file that does not is
@@ -47,7 +47,6 @@ SOURCE_TYPES: frozenset[str] = frozenset(
 
 # <project>/<dir>/<entity>/<file>  →  item_type
 _ENTITY_DIRS: dict[str, str] = {
-    "models": MODEL_SOURCE_TYPE,
     "views": VIEW_SOURCE_TYPE,
     "cubes": CUBE_SOURCE_TYPE,
 }

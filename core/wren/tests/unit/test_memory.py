@@ -715,7 +715,7 @@ class TestMemoryStore:
         proj = tmp_path / "proj"
         (proj / "knowledge" / "rules").mkdir(parents=True)
         (proj / "knowledge" / "glossary").mkdir()
-        (proj / "models" / "orders").mkdir(parents=True)
+        (proj / "views" / "orders").mkdir(parents=True)
         (proj / "knowledge" / "rules" / "01_fiscal.md").write_text(
             "# Fiscal year\nThe fiscal year starts on 1 April; Q1 is April–June.",
             encoding="utf-8",
@@ -730,7 +730,7 @@ class TestMemoryStore:
         (proj / "knowledge" / "rules" / "03_empty.md").write_text("", encoding="utf-8")
         # Not collected: glossary is outside the indexed set.
         (proj / "knowledge" / "glossary" / "terms.md").write_text("x", encoding="utf-8")
-        (proj / "models" / "orders" / "metadata.yml").write_text(
+        (proj / "views" / "orders" / "metadata.yml").write_text(
             "name: orders\ndescription: Order facts with shipping priority per line\n"
             "columns:\n"
             + "".join(f"  - name: col{i}\n    type: int\n" for i in range(120)),
@@ -746,11 +746,11 @@ class TestMemoryStore:
         assert report["summary"]["chunked"] == 2
         assert report["summary"]["skipped"] == 1
         assert report["source_items"] == report["summary"]["chunks"]
-        assert set(report["summary"]["by_type"]) == {"rule", "model_source"}
+        assert set(report["summary"]["by_type"]) == {"rule", "view_source"}
         long = next(f for f in report["files"] if f["path"].endswith("02_long.md"))
         assert long["chunks"] > 1 and long["largest_chunk"] <= report["max_tokens"]
         model = next(f for f in report["files"] if f["path"].endswith("metadata.yml"))
-        assert model["item_type"] == "model_source" and model["chunks"] > 1
+        assert model["item_type"] == "view_source" and model["chunks"] > 1
 
         # Rows live next to schema items and are searchable by type.
         info = memory_store.status()
@@ -769,7 +769,7 @@ class TestMemoryStore:
             _MANIFEST,
             "shipping priority",
             model_name="orders",
-            item_type="model_source",
+            item_type="view_source",
             threshold=10,
         )
         assert src["results"], "model_name filter must reach the source rows"

@@ -347,8 +347,8 @@ class MemoryStore:
         return approx, _FALLBACK_MAX_TOKENS
 
     def index_sources(self, project_path: Path, manifest: dict) -> dict:
-        """Embed ``knowledge/rules/*.md`` and the ``models/``, ``views/``,
-        ``cubes/`` source files as rows (full file content, chunked).
+        """Embed ``knowledge/rules/*.md`` and the ``views/``, ``cubes/``
+        ``metadata.yml`` files as rows (full file content, chunked).
 
         Each file is checked against the embedder's token budget and chunked
         when needed (see :mod:`wren.memory.knowledge_indexer`). Existing
